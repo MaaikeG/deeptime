@@ -191,7 +191,7 @@ computeDiscreteLikelihood(StateIndex nThermStates, StateIndex nMarkovStates, Ene
 template<typename dtype>
 static const dtype computeLogLikelihood (const DTraj &dtraj,
                                   const BiasMatrix<dtype> &biasMatrix,
-                                  const np_array_nfc<dtype> &biasedConfEnergies,
+                                  const np_array<dtype> &biasedConfEnergies,
                                   const np_array_nfc<dtype> &modifiedStateCountsLog,
                                   const np_array<dtype> &thermStateEnergies,
                                   const CountsMatrix &stateCounts,
@@ -224,7 +224,7 @@ public:
     TRAM(std::size_t nThermStates, std::size_t nMarkovStates)
             : nThermStates_(nThermStates),
               nMarkovStates_(nMarkovStates),
-              biasedConfEnergies_(detail::generateFilledArray<dtype>({nThermStates_, nMarkovStates_}, 0.)),
+              biasedConfEnergies_(ExchangeableArray<dtype, 2>({nThermStates_, nMarkovStates_}, 0.)),
               lagrangianMultLog_(ExchangeableArray<dtype, 2>({nThermStates_, nMarkovStates_}, 0.)),
               modifiedStateCountsLog_(detail::generateFilledArray<dtype>({nThermStates_, nMarkovStates_}, 0.)),
               thermStateEnergies_(ExchangeableArray<dtype, 1>(std::vector<StateIndex>{nThermStates_}, 0)),
@@ -239,13 +239,13 @@ public:
         std::copy(lagrangianMultLog.data(), lagrangianMultLog.data() + lagrangianMultLog.size(),
                   lagrangianMultLog_.first()->mutable_data());
         std::copy(biasedConfEnergies.data(), biasedConfEnergies.data() + biasedConfEnergies.size(),
-                  biasedConfEnergies_.mutable_data());
+                  biasedConfEnergies_.first()->mutable_data());
         std::copy(modifiedStateCountsLog.data(), modifiedStateCountsLog.data() + modifiedStateCountsLog.size(),
                   modifiedStateCountsLog_.mutable_data());
     }
 
     const auto &biasedConfEnergies() const {
-        return biasedConfEnergies_;
+        return *biasedConfEnergies_.first();
     }
 
     const auto &lagrangianMultLog() const {
@@ -293,7 +293,7 @@ public:
             // Self-consistent update of the TRAM equations.
             updateLagrangianMult();
             updateStateCounts();
-            updateBiasedConfEnergies();
+            updateBiasedConfEnergies(input_->dtrajBuf(), input_->biasMatrixBuf());
 
             // Tracking of energy vectors for error calculation.
             updateThermStateEnergies();
@@ -308,7 +308,7 @@ public:
                 // log likelihood depends on transition matrices. Compute them first.
                 computeTransitionMatrices();
                 logLikelihood = computeLogLikelihood(input_->dtraj(), input_->biasMatrix(),
-                                                     biasedConfEnergies_, modifiedStateCountsLog_,
+                                                     *biasedConfEnergies_.first(), modifiedStateCountsLog_,
                                                      *thermStateEnergies_.first(), input_->stateCounts(),
                                                      input_->transitionCounts(), transitionMatrices_);
             }
@@ -336,13 +336,45 @@ public:
         computeTransitionMatrices();
     }
 
+    void init(std::shared_ptr<TRAMInput<dtype>> &tramInput) {
+        initLagrangianMult();
+        input_ = tramInput;
+    }
+
+    void batchUpdate(DTraj &batchDtraj, BiasMatrix<dtype> &batchBiasMatrix, float learningRate,
+                     bool trackLogLikelihoods = false) {
+
+        // Self-consistent update of the TRAM equations.
+        updateLagrangianMultBatch(learningRate);
+        updateStateCounts();
+        updateBiasedConfEnergiesBatch(batchDtraj, batchBiasMatrix, learningRate);
+
+        // Tracking of energy vectors for error calculation.
+        updateThermStateEnergies();
+        updateStatVectors(statVectors_);
+
+        // compare new thermStateEnergies_ and statVectors with old to get the
+        // iteration error (= how much the energies changed).
+        double iterationError = computeError(statVectors_);
+
+        dtype logLikelihood{0};
+        if (trackLogLikelihoods) {
+            computeTransitionMatrices();
+            logLikelihood = computeLogLikelihood(input_->dtraj(), input_->biasMatrix(),
+                                                 *biasedConfEnergies_.first(), modifiedStateCountsLog_,
+                                                 *thermStateEnergies_.first(), input_->stateCounts(),
+                                                 input_->transitionCounts(), transitionMatrices_);
+        }
+        shiftEnergiesToHaveZeroMinimum();
+    }
+
 private:
     std::shared_ptr<TRAMInput<dtype>> input_;
 
     StateIndex nThermStates_;
     StateIndex nMarkovStates_;
 
-    np_array_nfc<dtype> biasedConfEnergies_;
+    ExchangeableArray<dtype, 2> biasedConfEnergies_;
     ExchangeableArray<dtype, 2> lagrangianMultLog_;
     np_array_nfc<dtype> modifiedStateCountsLog_;
 
@@ -385,12 +417,17 @@ private:
         }
     }
 
+    void updateLagrangianMultBatch(float learningRate) {
+        updateLagrangianMult();
+        applyLearningRate(lagrangianMultLog_);
+    }
+
     void updateLagrangianMult() {
         lagrangianMultLog_.exchange();
         auto oldLagrangianMultLogBuf = lagrangianMultLog_.secondBuf();
         auto newLagrangianMultLogBuf = lagrangianMultLog_.firstBuf();
 
-        auto biasedConfEnergiesBuf = biasedConfEnergies_.template unchecked<2>();
+        auto biasedConfEnergiesBuf = biasedConfEnergies_.firstBuf();
 
         auto transitionCountsBuf = input_->transitionCountsBuf();
         auto stateCountsBuf = input_->stateCountsBuf();
@@ -431,15 +468,20 @@ private:
         }
     }
 
-    // update conformation energies based on one observed trajectory
-    void updateBiasedConfEnergies() {
-        std::fill(biasedConfEnergies_.mutable_data(), biasedConfEnergies_.mutable_data() +
-                                                      biasedConfEnergies_.size(), inf);
+    void updateBiasedConfEnergiesBatch(const DTraj &dtraj, const BiasMatrix<dtype> &biasMatrix, float learningRate) {
+        updateBiasedConfEnergies(dtraj.template unchecked<1>(), biasMatrix.template unchecked<2>());
+        applyLearningRate(biasedConfEnergies_, learningRate);
+    }
 
-        auto biasMatrixBuf = input_->biasMatrixBuf();
-        auto dtrajBuf = input_->dtrajBuf();
+    template<typename DTrajBuf, typename BiasMatrixBuf>
+    void updateBiasedConfEnergies(const DTrajBuf dtrajBuf, const BiasMatrixBuf biasMatrixBuf) {
+        biasedConfEnergies_.exchange();
+        // First set all values to infinity.
+        std::fill(biasedConfEnergies_.first()->mutable_data(),
+                  biasedConfEnergies_.first()->mutable_data() + biasedConfEnergies_.first()->size(),
+                  inf);
 
-        auto biasedConfEnergiesBuf = biasedConfEnergies_.template mutable_unchecked<2>();
+        auto biasedConfEnergiesBuf = biasedConfEnergies_.firstBuf();
         auto modifiedStateCountsLogBuf = modifiedStateCountsLog_.template unchecked<2>();
 
         auto *scratch = scratch_.get();
@@ -464,9 +506,19 @@ private:
         }
     }
 
+    template<py::ssize_t Dims>
+    void applyLearningRate(ExchangeableArray<dtype, Dims> & arrays, float learningRate) {
+        std::fill(arrays.first().data(),
+                  arrays.first().data() + arrays.first().size(),
+                  arrays.second().data(),
+                  arrays.first().mutable_data(),
+                  [learningRate](dtype previousVal, dtype nextVal) {
+                      return (1 - learningRate) * previousVal + learningRate * nextVal;
+                  });
+    }
 
     void updateStateCounts() {
-        auto biasedConfEnergiesBuf = biasedConfEnergies_.template unchecked<2>();
+        auto biasedConfEnergiesBuf = biasedConfEnergies_.firstBuf();
         auto lagrangianMultLogBuf = lagrangianMultLog_.firstBuf();
         auto modifiedStateCountsLogBuf = modifiedStateCountsLog_.template mutable_unchecked<2>();
 
@@ -547,7 +599,7 @@ private:
         // compute new values
         auto statVectorsBuf = statVectors.firstBuf();
         auto thermStateEnergiesBuf = thermStateEnergies_.firstBuf();
-        auto biasedConfEnergiesBuf = biasedConfEnergies_.template unchecked<2>();
+        auto biasedConfEnergiesBuf = biasedConfEnergies_.firstBuf();
 
         #pragma omp parallel for default(none) firstprivate(statVectorsBuf, \
                                                             thermStateEnergiesBuf, biasedConfEnergiesBuf)
@@ -590,7 +642,7 @@ private:
         thermStateEnergies_.exchange();
 
         // compute new
-        auto biasedConfEnergiesBuf = biasedConfEnergies_.template unchecked<2>();
+        auto biasedConfEnergiesBuf = biasedConfEnergies_.firstBuf();
         auto thermStateEnergiesBuf = thermStateEnergies_.firstBuf();
         auto scratch = scratch_.get();
 
@@ -605,11 +657,11 @@ private:
     // Shift all energies by min(biasedConfEnergies_) so the energies don't drift to
     // very large values.
     void shiftEnergiesToHaveZeroMinimum() {
-        auto biasedConfEnergiesBuf = biasedConfEnergies_.template mutable_unchecked<2>();
+        auto biasedConfEnergiesBuf = biasedConfEnergies_.firstBuf();
         auto thermStateEnergiesBuf = thermStateEnergies_.firstBuf();
 
-        auto ptr = biasedConfEnergies_.data();
-        auto shift = *std::min_element(ptr, ptr + biasedConfEnergies_.size());
+        auto shift = *std::min_element(biasedConfEnergies_.first()->data(),
+                                       biasedConfEnergies_.first()->data() + biasedConfEnergies_.first()->size());
 
         #pragma omp parallel for default(none) firstprivate(biasedConfEnergiesBuf, thermStateEnergiesBuf, shift)
         for (StateIndex k = 0; k < nThermStates_; ++k) {
@@ -622,7 +674,7 @@ private:
     }
 
     void normalize() {
-        auto biasedConfEnergiesBuf = biasedConfEnergies_.template mutable_unchecked<2>();
+        auto biasedConfEnergiesBuf = biasedConfEnergies_.firstBuf();
         auto markovStateEnergiesBuf = markovStateEnergies_.template mutable_unchecked<1>();
         auto thermStateEnergiesBuf = thermStateEnergies_.firstBuf();
 
@@ -648,7 +700,7 @@ private:
     }
 
     void computeTransitionMatrices() {
-        auto biasedConfEnergiesBuf = biasedConfEnergies_.template unchecked<2>();
+        auto biasedConfEnergiesBuf = biasedConfEnergies_.firstBuf();
         auto lagrangianMultLogBuf = lagrangianMultLog_.firstBuf();
 
         auto transitionCountsBuf = input_->transitionCountsBuf();
