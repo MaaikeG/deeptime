@@ -2,7 +2,7 @@
 #include "deeptime/markov/msm/tram/tram.h"
 #include "deeptime/markov/msm/tram/connected_set.h"
 #include "deeptime/markov/msm/tram/trajectory_mapping.h"
- 
+
 PYBIND11_MODULE(_tram_bindings, m) {
     using namespace pybind11::literals;
     using namespace deeptime::markov::tram;
@@ -17,6 +17,7 @@ PYBIND11_MODULE(_tram_bindings, m) {
                 .def("estimate", &TRAM<double>::estimate,
                      "input"_a, "max_iter"_a = 1000, "max_err"_a = 1e-8, "callback_interval"_a = 1,
                      "track_log_likelihoods"_a = false, "callback"_a = nullptr)
+                .def("batch_update", &TRAM<double>::batchUpdate, "dtraj"_a, "bias_matrix"_a, "learning_rate"_a)
                 .def_property_readonly("transition_matrices", &TRAM<double>::transitionMatrices)
                 .def_property_readonly("biased_conf_energies", &TRAM<double>::biasedConfEnergies)
                 .def_property_readonly("modified_state_counts_log", &TRAM<double>::modifiedStateCountsLog)
@@ -28,7 +29,9 @@ PYBIND11_MODULE(_tram_bindings, m) {
                 py::init<deeptime::np_array_nfc<int> &&, deeptime::np_array_nfc<int> &&, DTraj, BiasMatrix<double>>(),
                 "state_counts"_a, "transition_counts"_a, "dtraj"_a, "bias_matrix"_a);
 
-        tramMod.def("compute_sample_weights", &computeSampleWeightsLog<double>, py::call_guard<py::gil_scoped_release>(),
+
+        tramMod.def("compute_sample_weights", &computeSampleWeightsLog<double>,
+                    py::call_guard<py::gil_scoped_release>(),
                     "therm_state_index"_a = -1, "dtraj"_a, "bias_matrix"_a, "therm_state_energies"_a,
                     "modified_state_counts_log"_a);
 

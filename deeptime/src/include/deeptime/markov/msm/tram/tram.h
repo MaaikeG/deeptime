@@ -286,7 +286,7 @@ public:
             initLagrangianMult();
         }
 
-        double iterationError{0};
+        dtype iterationError{0};
 
         for (decltype(maxIter) iterationCount = 0; iterationCount < maxIter; ++iterationCount) {
 
@@ -341,8 +341,7 @@ public:
         input_ = tramInput;
     }
 
-    void batchUpdate(DTraj &batchDtraj, BiasMatrix<dtype> &batchBiasMatrix, float learningRate,
-                     bool trackLogLikelihoods = false) {
+    dtype batchUpdate(DTraj &batchDtraj, BiasMatrix<dtype> &batchBiasMatrix, float learningRate) {
 
         // Self-consistent update of the TRAM equations.
         updateLagrangianMultBatch(learningRate);
@@ -355,17 +354,10 @@ public:
 
         // compare new thermStateEnergies_ and statVectors with old to get the
         // iteration error (= how much the energies changed).
-        double iterationError = computeError(statVectors_);
-
-        dtype logLikelihood{0};
-        if (trackLogLikelihoods) {
-            computeTransitionMatrices();
-            logLikelihood = computeLogLikelihood(input_->dtraj(), input_->biasMatrix(),
-                                                 *biasedConfEnergies_.first(), modifiedStateCountsLog_,
-                                                 *thermStateEnergies_.first(), input_->stateCounts(),
-                                                 input_->transitionCounts(), transitionMatrices_);
-        }
+        dtype iterationError = computeError(statVectors_);
         shiftEnergiesToHaveZeroMinimum();
+
+        return iterationError;
     }
 
 private:
@@ -419,7 +411,7 @@ private:
 
     void updateLagrangianMultBatch(float learningRate) {
         updateLagrangianMult();
-        applyLearningRate(lagrangianMultLog_);
+        applyLearningRate(lagrangianMultLog_, learningRate);
     }
 
     void updateLagrangianMult() {
@@ -508,12 +500,12 @@ private:
 
     template<py::ssize_t Dims>
     void applyLearningRate(ExchangeableArray<dtype, Dims> & arrays, float learningRate) {
-        std::fill(arrays.first().data(),
-                  arrays.first().data() + arrays.first().size(),
-                  arrays.second().data(),
-                  arrays.first().mutable_data(),
-                  [learningRate](dtype previousVal, dtype nextVal) {
-                      return (1 - learningRate) * previousVal + learningRate * nextVal;
+        std::transform(arrays.second()->data(),
+                  arrays.second()->data() + arrays.second()->size(),
+                  arrays.first()->data(),
+                  arrays.first()->mutable_data(),
+                  [learningRate](const dtype oldVal, dtype newVal) {
+                      return (1 - learningRate) * oldVal + learningRate * newVal;
                   });
     }
 
