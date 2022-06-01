@@ -25,6 +25,7 @@ using StateIndex = py::ssize_t;
 
 using CountsMatrix = np_array<std::int32_t>;
 
+
 namespace detail {
 template<py::ssize_t Dims, typename Array>
 auto mutableBuf(Array &&array) {

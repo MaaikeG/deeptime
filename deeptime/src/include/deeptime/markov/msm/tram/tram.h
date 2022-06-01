@@ -8,6 +8,7 @@
 #include <cassert>
 #include <utility>
 #include "tram_input.h"
+#include "dtram_input.h"
 
 namespace deeptime::markov::tram {
 
@@ -20,7 +21,19 @@ template<typename dtype>
 constexpr static dtype logPrior() { return -std::numeric_limits<dtype>::infinity(); }
 }
 
+template<typename inputtype>
+struct UpdateBiasedConfEnergies;
+
+template<typename dtype>
+struct UpdateBiasedConfEnergies<TRAMInput<dtype>> {
+    static void compute() {
+
+    }
+};
+
+
 // Compute the sample likelihood from the traminput. This method only gets called by the TRAM struct, not by pybind.
+// TODO rename. This is a horrible name. Something like compute sample-dependent likelihood.
 template<typename dtype>
 static const dtype computeSampleLikelihood(const TRAMInput<dtype> &input,
                                            const np_array_nfc<dtype> &modifiedStateCountsLog) {
@@ -57,6 +70,7 @@ static const dtype computeSampleLikelihood(const TRAMInput<dtype> &input,
 // natural logarithm of the statistical weight per sample, log \mu^k(x).
 // If thermState =-1, this is the unbiased statistical sample weight, log \mu(x).
 // This method gets called by pybind! Either directly or via the call to computeloglikelihood.
+// TODO move this to a separate file? It is not used during (d)TRAM estimation
 template<typename dtype>
 static const std::vector<dtype> computeSampleWeightsLog(const DTraj &dtraj,
                                                         const BiasMatrix<dtype> &biasMatrix,
@@ -158,6 +172,7 @@ computeDiscreteLikelihood(const np_array_nfc<dtype> &biasedConfEnergies,
 // biasedConfEnergies_. This computes the parameter-dependent part of the likelihood, i.e. the factor -b^k(x) is
 // omitted as it is constant.
 // This loglikelihood computation gets called py pybind! It expects only one (concatenated) trajectory.
+// TODO move this to a separate file? It is not used during (d)TRAM estimation
 template<typename dtype>
 static const dtype computeLogLikelihood(const DTraj &dtraj,
                                         const BiasMatrix<dtype> &biasMatrix,
@@ -179,9 +194,10 @@ static const dtype computeLogLikelihood(const DTraj &dtraj,
     return logLikelihood;
 }
 
-template<typename dtype>
+template<typename inputtype>
 struct TRAM {
 public:
+    typedef typename inputtype::value_type dtype;
 
     TRAM(const np_array_nfc<dtype> &biasedConfEnergies,
          const np_array_nfc<dtype> &lagrangianMultLog,
@@ -234,7 +250,7 @@ public:
     // returned through the callback function if it is provided. log-likelihoods are returned if
     // trackLogLikelihoods = true. By default, this is false, since calculating the log-likelihood required
     // an estimation of the transition matrices, which slows down estimation.
-    void estimate(std::shared_ptr<TRAMInput<dtype>> &tramInput, std::size_t maxIter, dtype maxErr,
+    void estimate(std::shared_ptr<inputtype> &tramInput, std::size_t maxIter, dtype maxErr,
                   std::size_t callbackInterval = 1, bool trackLogLikelihoods = false,
                   const py::object *callback = nullptr) {
 
@@ -259,11 +275,19 @@ public:
 
             dtype logLikelihood{-inf};
             if (trackLogLikelihoods) {
+
                 // log likelihood depends on transition matrices. Compute them first.
-                computeTransitionMatrices();
+                if constexpr(std::is_same_v<TRAMInput<dtype>, inputtype>) {
+                    computeTransitionMatrices();
+                }
+                else {
+                    // TODO
+                }
                 logLikelihood = computeDiscreteLikelihood(biasedConfEnergies_, input_->stateCounts(),
-                                                               input_->transitionCounts(), transitionMatrices_) +
-                                     computeSampleLikelihood(*input_, modifiedStateCountsLog_);
+                                                          input_->transitionCounts(), transitionMatrices_);
+                if constexpr(std::is_same_v<TRAMInput<dtype>, inputtype>) {
+                    logLikelihood += computeSampleLikelihood(*input_, modifiedStateCountsLog_);
+                }
             }
 
             // Send convergence info back to user by calling a python callback function
@@ -278,16 +302,27 @@ public:
             }
         }
         // Done iterating. Compute all energies for the thermodynamic states and markov states.
-        updateMarkovStateEnergies();
+
+        if constexpr(std::is_same_v<TRAMInput<dtype>, inputtype>) {
+            updateMarkovStateEnergies();
+        }
+        else {
+            // TODO
+        }
         updateThermStateEnergies();
         normalize();
 
         // And compute final transition matrices
-        computeTransitionMatrices();
+        if constexpr(std::is_same_v<TRAMInput<dtype>, inputtype>) {
+            computeTransitionMatrices();
+        }
+        else {
+            // TODO
+        }
     }
 
 private:
-    std::shared_ptr<TRAMInput<dtype>> input_;
+    std::shared_ptr<inputtype> input_;
 
     StateIndex nThermStates_;
     StateIndex nMarkovStates_;
@@ -365,38 +400,44 @@ private:
     }
 
     // update conformation energies based on one observed trajectory
+    // TODO version for TRAM and for dTRAM!
     void updateBiasedConfEnergies() {
         std::fill(biasedConfEnergies_.mutable_data(), biasedConfEnergies_.mutable_data() +
                                                       biasedConfEnergies_.size(), inf);
 
-        std::vector<ArrayBuffer<BiasMatrix<dtype>, 2>> biasMatrixBuffers(input_->biasMatrices().begin(),
-                                                                         input_->biasMatrices().end());
-        auto biasMatrixPtr = biasMatrixBuffers.data();
+        if constexpr(std::is_same_v<TRAMInput<dtype>, inputtype>) {
+            std::vector<ArrayBuffer<BiasMatrix<dtype>, 2>> biasMatrixBuffers(input_->biasMatrices().begin(),
+                                                                             input_->biasMatrices().end());
+            auto biasMatrixPtr = biasMatrixBuffers.data();
 
-        auto biasedConfEnergiesBuf = biasedConfEnergies_.template mutable_unchecked<2>();
-        auto modifiedStateCountsLogBuf = modifiedStateCountsLog_.template unchecked<2>();
+            auto biasedConfEnergiesBuf = biasedConfEnergies_.template mutable_unchecked<2>();
+            auto modifiedStateCountsLogBuf = modifiedStateCountsLog_.template unchecked<2>();
 
-        auto nThermStates = nThermStates_, nMarkovStates = nMarkovStates_;
-	    auto input = input_;
-        #pragma omp parallel for default(none) firstprivate(nMarkovStates, nThermStates, input, biasMatrixPtr, \
+            auto nThermStates = nThermStates_, nMarkovStates = nMarkovStates_;
+            auto input = input_;
+            #pragma omp parallel for default(none) firstprivate(nMarkovStates, nThermStates, input, biasMatrixPtr, \
                                                             biasedConfEnergiesBuf, modifiedStateCountsLogBuf)
-        for (StateIndex i = 0; i < nMarkovStates; ++i) {
-            std::vector<dtype> scratch(nThermStates);
+            for (StateIndex i = 0; i < nMarkovStates; ++i) {
+                std::vector<dtype> scratch(nThermStates);
 
-            for (std::int32_t x = 0; x < input->nSamples(i); ++x) {
-                std::size_t o = 0;
-                for (StateIndex k = 0; k < nThermStates; ++k) {
-                    if (modifiedStateCountsLogBuf(k, i) > -inf) {
-                        scratch[o++] = modifiedStateCountsLogBuf(k, i) - biasMatrixPtr[i](x, k);
+                for (std::int32_t x = 0; x < input->nSamples(i); ++x) {
+                    std::size_t o = 0;
+                    for (StateIndex k = 0; k < nThermStates; ++k) {
+                        if (modifiedStateCountsLogBuf(k, i) > -inf) {
+                            scratch[o++] = modifiedStateCountsLogBuf(k, i) - biasMatrixPtr[i](x, k);
+                        }
+                    }
+                    dtype divisor = numeric::kahan::logsumexp_sort_kahan_inplace(scratch.begin(), o);
+
+                    for (StateIndex k = 0; k < nThermStates; ++k) {
+                        biasedConfEnergiesBuf(k, i) = -numeric::kahan::logsumexp_pair(
+                                -biasedConfEnergiesBuf(k, i), -(divisor + biasMatrixPtr[i](x, k)));
                     }
                 }
-                dtype divisor = numeric::kahan::logsumexp_sort_kahan_inplace(scratch.begin(), o);
-
-                for (StateIndex k = 0; k < nThermStates; ++k) {
-                    biasedConfEnergiesBuf(k, i) = -numeric::kahan::logsumexp_pair(
-                            -biasedConfEnergiesBuf(k, i), -(divisor + biasMatrixPtr[i](x, k)));
-                }
             }
+        }
+        else {
+            // TODO
         }
     }
 
@@ -480,6 +521,7 @@ private:
         }
     }
 
+    // TODO version for TRAM and for dTRAM!
     void updateMarkovStateEnergies() {
         // first reset all confirmation energies to infinity
         std::fill(markovStateEnergies_.mutable_data(), markovStateEnergies_.mutable_data() + nMarkovStates_, inf);
@@ -492,7 +534,7 @@ private:
         auto modifiedStateCountsLogBuf = modifiedStateCountsLog_.template unchecked<2>();
 
         auto nThermStates = nThermStates_, nMarkovStates = nMarkovStates_;
-	    auto input = input_;
+        auto input = input_;
         // assume that markovStateEnergies_ were set to INF by the caller on the first call
         #pragma omp parallel for default(none) firstprivate(nMarkovStates, nThermStates, input, biasMatrixPtr, \
                                                             markovStateEnergiesBuf, modifiedStateCountsLogBuf)
