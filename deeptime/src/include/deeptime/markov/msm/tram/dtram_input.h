@@ -21,12 +21,12 @@ template<typename dtype>
 class dTRAMInput {
 public:
     using size_type = typename BiasMatrices<dtype>::size_type;
+    using value_type = dtype;
 
     dTRAMInput(CountsMatrix &&stateCounts, CountsMatrix &&transitionCounts, BiasMatrix<dtype> &&biasCoefficients)
             : stateCounts_(std::move(stateCounts)),
               transitionCounts_(std::move(transitionCounts)),
-              biasCoefficients_(std::move(biasCoefficients)),
-              cumNSamples_() {
+              biasCoefficients_(std::move(biasCoefficients)) {
         validateInput();
     }
 
@@ -82,7 +82,6 @@ private:
     CountsMatrix stateCounts_;
     CountsMatrix transitionCounts_;
     BiasMatrix<dtype> biasCoefficients_;
-    std::vector<size_type> cumNSamples_;
 };
 
 }

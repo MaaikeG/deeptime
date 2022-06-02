@@ -12,12 +12,13 @@ namespace deeptime::markov::tram {
 
 
 template<typename dtype>
-class TRAMInput : dTRAMInput<dtype> {
+class TRAMInput : public dTRAMInput<dtype> {
 public:
     using size_type = typename BiasMatrices<dtype>::size_type;
 
-    TRAMInput(CountsMatrix &&stateCounts, CountsMatrix &&transitionCounts, BiasMatrices<dtype> biasMatrices)
-            : dTRAMInput<dtype>(stateCounts, transitionCounts, biasCoefficients) {
+    TRAMInput(CountsMatrix &&stateCounts, CountsMatrix &&transitionCounts, BiasMatrices<dtype> biasMatrices,
+              BiasMatrix<dtype> &&biasCoefficients)
+            : dTRAMInput<dtype>(std::move(stateCounts), std::move(transitionCounts), std::move(biasCoefficients)) {
         biasMatrices_ = std::move(biasMatrices);
         cumNSamples();
         validateInput();
@@ -38,7 +39,7 @@ public:
     void validateInput() const {
         detail::throwIfInvalid(!biasMatrices_.empty(), "We need bias matrices.");
         std::for_each(begin(biasMatrices_), end(biasMatrices_),
-                      [nThermStates = stateCounts_.shape(0)](const auto &biasMatrix) {
+                      [nThermStates = this->stateCounts().shape(0)](const auto &biasMatrix) {
                           detail::throwIfInvalid(biasMatrix.ndim() == 2,
                                                  "biasMatrix has an incorrect number of dimension. ndims should be 2.");
                           detail::throwIfInvalid(biasMatrix.shape(1) == nThermStates,
