@@ -201,7 +201,7 @@ class TRAMDataset(Dataset):
                 biases.append(bias_matrix[indices])
 
             bias_list.append(np.concatenate(biases))
-        return tram.TRAMInput(self.state_counts, self.transition_counts, bias_list)
+        return tram.TRAMInput(self.state_counts, self.transition_counts, bias_list, None)
 
     @property
     def n_therm_states(self):

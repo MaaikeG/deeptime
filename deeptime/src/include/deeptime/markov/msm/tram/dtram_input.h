@@ -23,7 +23,7 @@ public:
     using size_type = typename BiasMatrices<dtype>::size_type;
     using value_type = dtype;
 
-    dTRAMInput(CountsMatrix &&stateCounts, CountsMatrix &&transitionCounts, BiasMatrix<dtype> &&biasCoefficients)
+    dTRAMInput(CountsMatrix &&stateCounts, CountsMatrix &&transitionCounts, std::optional<BiasMatrix<dtype>> &&biasCoefficients)
             : stateCounts_(std::move(stateCounts)),
               transitionCounts_(std::move(transitionCounts)),
               biasCoefficients_(std::move(biasCoefficients)) {
@@ -49,8 +49,10 @@ public:
                                "stateCounts.shape(1) should equal transitionCounts.shape(1)");
         detail::throwIfInvalid(transitionCounts_.shape(1) == transitionCounts_.shape(2),
                                "transitionCounts.shape(1) should equal transitionCounts.shape(2)");
-        detail::throwIfInvalid(stateCounts_.shape() == biasCoefficients_.shape(),
-                               "stateCounts.shape() should equal biasCoefficients.shape()");
+        if (biasCoefficients_) {
+            detail::throwIfInvalid(stateCounts_.shape() == biasCoefficients_->shape(),
+                                   "stateCounts.shape() should equal biasCoefficients.shape()");
+        }
     }
 
     const auto& transitionCounts() const {
@@ -81,7 +83,7 @@ public:
 private:
     CountsMatrix stateCounts_;
     CountsMatrix transitionCounts_;
-    BiasMatrix<dtype> biasCoefficients_;
+    std::optional<BiasMatrix<dtype>> biasCoefficients_;
 };
 
 }

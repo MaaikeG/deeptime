@@ -17,7 +17,7 @@ public:
     using size_type = typename BiasMatrices<dtype>::size_type;
 
     TRAMInput(CountsMatrix &&stateCounts, CountsMatrix &&transitionCounts, BiasMatrices<dtype> biasMatrices,
-              BiasMatrix<dtype> &&biasCoefficients)
+              std::optional<BiasMatrix<dtype>> &&biasCoefficients)
             : dTRAMInput<dtype>(std::move(stateCounts), std::move(transitionCounts), std::move(biasCoefficients)) {
         biasMatrices_ = std::move(biasMatrices);
         cumNSamples();
