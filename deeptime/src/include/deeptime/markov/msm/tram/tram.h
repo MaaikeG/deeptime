@@ -101,10 +101,10 @@ static const dtype computeSampleDependentLikelihood(const TRAMInput<dtype> &inpu
     auto modifiedStateCountsLogPtr = &modifiedStateCountsLogBuf;
 
     auto inputPtr = &input;
-    auto scratch_LL = std::vector<dtype>(input.nMarkovStates());
+    dtype LL = 0;// std::vector<dtype>(input.nMarkovStates());
 
     #pragma omp parallel for default(none) firstprivate(nThermStates, inputPtr, biasMatrixPtr, stateCountsPtr, biasedConfEnergiesPtr, \
-                                                        modifiedStateCountsLogPtr, cumNSamples) shared(scratch_LL)
+                                                        modifiedStateCountsLogPtr, cumNSamples) reduction(+:LL)
     for (auto i = 0; i < inputPtr->nMarkovStates(); ++i) {
         std::vector<dtype> scratch(nThermStates);
 
@@ -115,17 +115,18 @@ static const dtype computeSampleDependentLikelihood(const TRAMInput<dtype> &inpu
                 // discrete sample log-likelihood \sum_{k=1}^K \sum_{i=1}^m N_i^k * f_i^k
                 // compute once for every thermodynamic state and add to total
                 if (x == 0) {
-                    scratch_LL[i] += ((*stateCountsPtr)(k, i) + tram::detail::prior<dtype>()) * (*biasedConfEnergiesPtr)(k, i);
+                    LL += ((*stateCountsPtr)(k, i) + tram::detail::prior<dtype>()) * (*biasedConfEnergiesPtr)(k, i);
                 }
                 if ((*modifiedStateCountsLogPtr)(k, i) > -std::numeric_limits<dtype>::infinity()) {
                     scratch[o++] = (*modifiedStateCountsLogPtr)(k, i) - biasMatrixPtr[i](x, k);
                 }
             }
             auto logDivisor = numeric::kahan::logsumexp_sort_kahan_inplace(scratch.begin(), o);
-            scratch_LL[i] -= logDivisor;
+            LL -= logDivisor;
         }
     }
-    return std::accumulate(scratch_LL.begin(), scratch_LL.end(), 0);
+    return LL;
+//    return std::accumulate(scratch_LL.begin(), scratch_LL.end(), 0);
 }
 
 // TRAM log-likelihood that comes from the transitions, i.e. the MSM part of the TRAM likelihood (or the entire
