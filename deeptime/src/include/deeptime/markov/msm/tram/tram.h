@@ -104,7 +104,7 @@ static const dtype computeSampleDependentLikelihood(const TRAMInput<dtype> &inpu
     dtype LL = 0;// std::vector<dtype>(input.nMarkovStates());
 
     #pragma omp parallel for default(none) firstprivate(nThermStates, inputPtr, biasMatrixPtr, stateCountsPtr, biasedConfEnergiesPtr, \
-                                                        modifiedStateCountsLogPtr, cumNSamples) reduction(+:LL)
+                                                        modifiedStateCountsLogPtr) reduction(+:LL)
     for (auto i = 0; i < inputPtr->nMarkovStates(); ++i) {
         std::vector<dtype> scratch(nThermStates);
 
