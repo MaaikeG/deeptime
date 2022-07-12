@@ -298,13 +298,24 @@ def test_fit_with_dataset_2(init_strategy):
 
 def test_mbar_initalization():
     (dtrajs, bias_matrices) = make_random_input_data(5, 5, make_ttrajs=False)
-    tram = TRAM(callback_interval=2, maxiter=0, progress=tqdm, init_maxiter=100)
-    ll1 = tram.fit_fetch((dtrajs, bias_matrices)).compute_log_likelihood(dtrajs, bias_matrices)
+    model = TRAM(callback_interval=2, maxiter=0, progress=tqdm, init_maxiter=1, track_log_likelihoods=True).fit_fetch((dtrajs, bias_matrices)) 
+    energies_1 = model.biased_conf_energies
 
-    tram = TRAM(callback_interval=2, maxiter=0, progress=tqdm, init_maxiter=0)
-    ll2 = tram.fit_fetch((dtrajs, bias_matrices)).compute_log_likelihood(dtrajs, bias_matrices)
+    model = TRAM(callback_interval=2, maxiter=0, progress=tqdm, init_maxiter=0, track_log_likelihoods=True).fit_fetch((dtrajs, bias_matrices))
+    energies_2 = model.biased_conf_energies
 
-    np.testing.assert_(ll1 > ll2)
+    with np.testing.assert_raises(AssertionError):
+        np.testing.assert_equal(energies_1, energies_2)
+
+
+def test_callback_LL_and_LL_are_equal():
+    tram = TRAM(track_log_likelihoods=True, callback_interval=1, maxiter=100)
+    dtrajs, bias_matrices = make_random_input_data(5, 5, make_ttrajs=False)
+    model = tram.fit_fetch((dtrajs, bias_matrices))
+    # values should be almost equal but may differ by a few decimal points since
+    # the model likeihood is computed after one more update on the energies
+    LL_diff = tram.log_likelihoods[-1] - model.compute_log_likelihood(dtrajs, bias_matrices)
+    np.testing.assert_(LL_diff < 1e-3)
 
 
 def test_unknown_init_strategy():

@@ -246,7 +246,7 @@ class TRAM(_MSMBaseEstimator):
                 biased_conf_energies = np.zeros((dataset.n_therm_states, dataset.n_markov_states))
 
         lagrangian_mult_log = tram.initialize_lagrangians(dataset.transition_counts)
-        modified_state_counts = np.zeros_like(lagrangian_mult_log)  # intialize this as the dataset state counts???
+        modified_state_counts = np.zeros_like(lagrangian_mult_log) 
         return tram.TRAM(biased_conf_energies, lagrangian_mult_log, modified_state_counts)
 
     def _run_estimation(self, tram_input):

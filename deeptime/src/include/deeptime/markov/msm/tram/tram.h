@@ -91,9 +91,9 @@ static const dtype computeSampleDependentLikelihood(const TRAMInput<dtype> &inpu
                                                                  end(input.biasMatrices())};
     auto biasMatrixPtr = biasMatrixBuf.data();
 
-    ArrayBuffer<CountsMatrix, 2> biasedConfEnergiesBuf{biasedConfEnergies};
+    ArrayBuffer<np_array_nfc<dtype>, 2> biasedConfEnergiesBuf{biasedConfEnergies};
     auto biasedConfEnergiesPtr = &biasedConfEnergiesBuf;
-
+    
     ArrayBuffer<CountsMatrix, 2> stateCountsBuf{input.stateCounts()};
     auto stateCountsPtr = &stateCountsBuf;
 
@@ -101,8 +101,9 @@ static const dtype computeSampleDependentLikelihood(const TRAMInput<dtype> &inpu
     auto modifiedStateCountsLogPtr = &modifiedStateCountsLogBuf;
 
     auto inputPtr = &input;
+    
     dtype LL = 0;// std::vector<dtype>(input.nMarkovStates());
-
+    
     #pragma omp parallel for default(none) firstprivate(nThermStates, inputPtr, biasMatrixPtr, stateCountsPtr, biasedConfEnergiesPtr, \
                                                         modifiedStateCountsLogPtr) reduction(+:LL)
     for (auto i = 0; i < inputPtr->nMarkovStates(); ++i) {
@@ -259,7 +260,7 @@ public:
                     // TODO
                 }
                 logLikelihood = computeTransitionLikelihood(input_->stateCounts(), input_->transitionCounts(),
-                                                            transitionMatrices_);
+                                                           transitionMatrices_);
                 if constexpr(std::is_same_v<TRAMInput<dtype>, inputtype>) {
                     logLikelihood += computeSampleDependentLikelihood(*input_, biasedConfEnergies_, modifiedStateCountsLog_);
                 }
@@ -268,7 +269,7 @@ public:
             // Send convergence info back to user by calling a python callback function
             if (callback != nullptr && callbackInterval > 0 && iterationCount % callbackInterval == 0) {
                 py::gil_scoped_acquire guard;
-                (*callback)(callbackInterval, iterationError, logLikelihood);
+		(*callback)(callbackInterval, iterationError, logLikelihood);
             }
 
             if (iterationError < maxErr) {
@@ -779,8 +780,20 @@ static const dtype computeLogLikelihood(const DTraj &dtraj,
 
     // then compute log of all sample weights, and add to log likelihood.
     auto sampleWeights = computeSampleWeightsLog(dtraj, biasMatrix, thermStateEnergies, modifiedStateCountsLog, -1);
-    logLikelihood += numeric::kahan::logsumexp_sort_kahan_inplace(sampleWeights.begin(), sampleWeights.end());
+    logLikelihood += std::accumulate(sampleWeights.begin(), sampleWeights.end(), 0.);
+    
+    auto nThermStates = static_cast<StateIndex>(stateCounts.shape(0));
+    auto nMarkovStates = static_cast<StateIndex>(stateCounts.shape(1));
+    
+    auto biasedConfEnergiesBuf = biasedConfEnergies.template unchecked<2>();
+    auto stateCountsBuf = stateCounts.template unchecked<2>();
 
+    // Add the extra factor f_i^k (not included in the sample weights) for each sample.
+    for (StateIndex k = 0; k < nThermStates; ++k) {
+        for (StateIndex i = 0; i < nMarkovStates; ++i) {
+    	    logLikelihood += biasedConfEnergiesBuf(k, i) * stateCountsBuf(k, i);
+	}
+    }	
     return logLikelihood;
 }
 
